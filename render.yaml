@@ -1,0 +1,45 @@
+# ==============================================================================
+# Render Blueprint Specification for Social Media Studio
+# Free-Tier Web Service running FastAPI ASGI server + Background Scheduler Worker
+# Docs: https://render.com/docs/blueprint-spec
+# ==============================================================================
+
+services:
+  - type: web
+    name: social-studio-api
+    runtime: python
+    region: oregon
+    plan: free
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: ./scripts/start_production.sh
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      - key: ENVIRONMENT
+        value: production
+      - key: DEBUG
+        value: "false"
+      - key: API_V1_PREFIX
+        value: /api/v1
+      - key: DEFAULT_PUBLISHER
+        value: mock_x
+      # DATABASE_URL: Recommended to connect to free managed PostgreSQL (e.g. Neon: https://neon.tech)
+      # Format: postgresql://[user]:[password]@[neon-hostname]/[dbname]?sslmode=require
+      # Set in Render Dashboard -> Environment Variables. If unset, falls back to local SQLite.
+      - key: DATABASE_URL
+        sync: false
+      # OPTIONAL: Telegram credentials (only required if DEFAULT_PUBLISHER=telegram)
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: ENABLE_MOCK_X
+        value: "true"
+      - key: ENABLE_MOCK_LINKEDIN
+        value: "true"
+      - key: SCHEDULER_POLL_INTERVAL_SECONDS
+        value: "2.0"
+      - key: SCHEDULER_BATCH_SIZE
+        value: "10"

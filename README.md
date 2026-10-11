@@ -610,4 +610,163 @@ Run the test suite with pytest:
 .venv/bin/pytest tests/ -v
 ```
 All **112 automated tests** execute in ~1.5 seconds without any internet connection or real Telegram credentials.
-# social-studio
+
+---
+
+## 15. Production Deployment Guide (Free-Tier Render + Neon PostgreSQL)
+
+This guide provides instructions to deploy Social Media Studio to a reliable, permanent free-tier architecture with HTTPS, persistent database storage, and a continuously running background worker.
+
+### A. Free-Tier Architecture & Feasibility Analysis
+
+| Component | Provider & Tier | Cost | Persistence & Limits |
+| :--- | :--- | :---: | :--- |
+| **Web Service & Worker** | **Render Free Web Service** | $0/mo | 512MB RAM, 750 instance hours/month. Spins down after 15 minutes of HTTP inactivity. Running both Uvicorn and the background worker inside a supervised container via `scripts/start_production.sh` keeps worker compute at $0. |
+| **Persistent Database** | **Neon Free Serverless Postgres** | $0/mo | 0.5GB storage, permanent (does not expire). Automatically backed up, SSL required. |
+| **Continuous Keep-Alive** | **UptimeRobot / cron-job.org** | $0/mo | Pings `GET /health` every 10 minutes to prevent Render from sleeping, keeping the scheduler worker polling 24/7. |
+
+> [!NOTE]
+> **Why Neon Postgres instead of SQLite or Render Postgres?**
+> Render free web services have ephemeral disks (all local SQLite files are wiped on redeploy or restart), and Render's free PostgreSQL databases automatically expire and delete after 30 days. Neon provides a permanent, non-expiring managed PostgreSQL database with native SSL encryption.
+
+---
+
+### B. Step-by-Step Deployment Procedure
+
+#### Step 1: Provision Free PostgreSQL on Neon
+1. Go to [https://neon.tech](https://neon.tech) and sign up with GitHub or Google.
+2. Click **Create Project**, name it `social-studio`, and choose your nearest AWS region.
+3. On the project dashboard, locate the **Connection Details** box.
+4. Copy the connection string. It will look like:
+   ```
+   postgresql://neondb_owner:npg_AbCdEf123456@ep-cool-fog-123456.us-east-2.aws.neon.tech/neondb?sslmode=require
+   ```
+
+#### Step 2: Push Repository to GitHub
+Ensure all code and configuration files are pushed to your repository:
+```bash
+git push origin main
+```
+
+#### Step 3: Deploy to Render via Blueprint or Web Service
+
+**Method A: One-Click Deploy via Render Blueprint (Recommended)**
+1. Log in to [https://dashboard.render.com](https://dashboard.render.com).
+2. Click **New +** $\to$ **Blueprint**.
+3. Select your GitHub repository (`https://github.com/callmekriztal/social-studio`).
+4. Render automatically parses [`render.yaml`](file:///home/celeste/social_media/render.yaml).
+5. When prompted for environment variables:
+   - `DATABASE_URL`: Paste your Neon PostgreSQL connection string.
+   - (Optional) `TELEGRAM_BOT_TOKEN` & `TELEGRAM_CHAT_ID`: Enter your credentials if publishing to live Telegram; otherwise leave blank to run in mock mode.
+6. Click **Apply**. Render will trigger the build and deploy.
+
+**Method B: Manual Web Service Setup**
+1. Click **New +** $\to$ **Web Service**.
+2. Connect your repository.
+3. Configure settings:
+   - **Name**: `social-studio-api`
+   - **Region**: Same region as your Neon database (e.g. `Oregon (US West)`).
+   - **Runtime**: `Python 3`
+   - **Build Command**: `pip install --upgrade pip && pip install -r requirements.txt`
+   - **Start Command**: `./scripts/start_production.sh`
+   - **Plan**: `Free`
+4. Under **Environment Variables**, add:
+   - `ENVIRONMENT` = `production`
+   - `DEBUG` = `false`
+   - `DATABASE_URL` = `<your-neon-postgres-connection-string>`
+   - `DEFAULT_PUBLISHER` = `mock_x`
+   - `SCHEDULER_POLL_INTERVAL_SECONDS` = `2.0`
+   - `SCHEDULER_BATCH_SIZE` = `10`
+5. Under **Health Check Path**, enter `/health`.
+6. Click **Create Web Service**.
+
+---
+
+### C. Verifying Production Deployment
+
+#### 1. Check Build and Startup Logs
+In your Render dashboard under the **Logs** tab, verify the startup sequence:
+```
+Initializing database schema...
+Database schema verified and ready.
+Starting background scheduler worker daemon...
+Scheduler worker running (PID 15).
+Starting production Uvicorn ASGI server on 0.0.0.0:10000...
+INFO:     Started server process [16]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:10000
+```
+
+#### 2. Ping Public Health Check Endpoint
+```bash
+curl -i https://social-studio-api.onrender.com/health
+```
+Expected HTTP 200 Response:
+```json
+{
+  "status": "healthy",
+  "environment": "production",
+  "database": "healthy",
+  "timestamp": "2026-10-11T05:00:00.123456Z"
+}
+```
+
+#### 3. Execute Production Smoke Test
+Test the complete production ingestion, generation, approval, and scheduling pipeline:
+```bash
+API_URL="https://social-studio-api.onrender.com"
+
+# 1. Ingest post
+POST_ID=$(curl -s -X POST "$API_URL/api/posts" \
+  -H "Content-Type: application/json" \
+  -d '{"title": "Prod Test", "content": "Verifying production deployment on Render and Neon."}' \
+  | python3 -c "import sys, json; print(json.load(sys.stdin)['id'])")
+
+# 2. Generate variants
+curl -s -X POST "$API_URL/api/posts/$POST_ID/generate" \
+  -H "Content-Type: application/json" \
+  -d '{"platforms": ["mock_x"]}'
+
+# 3. Approve variant
+curl -s -X POST "$API_URL/api/variants/1/approve"
+
+# 4. Schedule variant for immediate release (timestamp in the past)
+curl -s -X POST "$API_URL/api/variants/1/schedule" \
+  -H "Content-Type: application/json" \
+  -d '{"scheduled_at": "2026-10-11T00:00:00Z"}'
+
+# 5. Check publish history after worker execution
+sleep 4
+curl -s "$API_URL/api/publish-history?variant_id=1"
+```
+
+---
+
+### D. Keeping the Free-Tier Worker Active 24/7
+
+Render's free tier spins down web services after 15 minutes of inactivity. When the web service sleeps, the background worker inside the container pauses until traffic arrives.
+
+To keep the worker running continuously without sleeping:
+1. Create a free account at [https://cron-job.org](https://cron-job.org) or [https://uptimerobot.com](https://uptimerobot.com).
+2. Create a new monitor pinging your health endpoint:
+   `https://social-studio-api.onrender.com/health`
+3. Set the ping interval to **every 10 minutes**.
+4. This keeps the container awake within Render's 750 free monthly hours, ensuring scheduled posts release on time without cold-start delays.
+
+---
+
+### E. Production Troubleshooting
+
+1. **Database Connection Errors (`sslmode=require`)**:
+   - Neon requires SSL. Verify your `DATABASE_URL` ends with `?sslmode=require`.
+   - `app/config.py` automatically normalizes `postgres://` to `postgresql://` for SQLAlchemy 2.x.
+2. **Permission Denied on `scripts/start_production.sh`**:
+   - Ensure the script is marked executable in git:
+     ```bash
+     chmod +x scripts/start_production.sh
+     git update-index --chmod=+x scripts/start_production.sh
+     ```
+3. **Cold Starts After Inactivity**:
+   - If not using a keep-alive monitor, initial requests after 15 minutes of inactivity may take 30–50 seconds while the container spins up. The health check and API will resume normally once booted.
+

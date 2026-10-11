@@ -221,9 +221,32 @@
 4. **EVIDENCE.md Finalization**:
    - Added the Capstone Requirement-by-Requirement Evidence Matrix covering all 9 requirement areas with verified status, test commands, observed results, and limitations.
 
+## Phase 10: Production Deployment Preparation
+- **Date**: 2026-10-11
+- **Goal**: Research free-tier PaaS limitations, prepare the application for production deployment with persistent database and always-on background worker, configure ASGI server and supervisor, maintain idempotency safeguards, and document full deployment procedures.
+
+### Key Milestones Completed:
+1. **Free-Tier PaaS & Database Research**:
+   - Evaluated Render, Koyeb, and Fly.io. Identified that Render's standalone Background Workers are paid-only ($7/mo min), and its free PostgreSQL expires after 30 days. Similarly, Koyeb limits free tier to 1 web service without persistent volumes.
+   - Selected **Render (Web Service)** paired with **Neon (Free Managed PostgreSQL)** as the most robust, permanent free-tier architecture.
+   - Designed a dual-process container supervisor to run both the FastAPI web service and the background scheduler worker inside Render's single free Web Service, keeping compute costs at $0.
+2. **Production-Ready ASGI & Process Supervisor**:
+   - Implemented `scripts/start_production.sh` with dynamic host/port binding (`$HOST`, `$PORT`), automated idempotent database schema initialization, background worker launching, Uvicorn ASGI server execution with `--proxy-headers` and `--forwarded-allow-ips='*'`, and signal trapping (`SIGTERM`, `SIGINT`) for graceful shutdown.
+3. **Database Portability & Connection Pooling**:
+   - Added `psycopg2-binary>=2.9.9` to `requirements.txt`.
+   - Updated `app/config.py` with `normalized_database_url` converting legacy `postgres://` to `postgresql://`.
+   - Configured SQLAlchemy connection pooling with `pool_pre_ping=True, pool_size=5, max_overflow=10` for resilient connection recycling with serverless PostgreSQL providers.
+4. **Platform Infrastructure as Code**:
+   - Created `render.yaml` declaring the Web Service, Python 3.12 runtime, build commands, startup script, health check path (`/health`), and environment variable specifications.
+5. **Configuration & Documentation**:
+   - Updated `.env.example` with production PostgreSQL strings and deployment variables.
+   - Added Section 6 to `EVIDENCE.md` detailing the production deployment smoke-test checklist.
+   - Updated `README.md` with complete deployment instructions.
+
 ---
 
 ## Retrospective & Development Analysis
+
 
 ### 1. Important Architectural Decisions
 * **Layered Architecture with Dependency Injection**: The API controllers in `app/api/` depend strictly on domain services and repositories via FastAPI's `Depends(get_db)`. No business or publishing logic resides in route handlers.

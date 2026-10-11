@@ -17,9 +17,18 @@ class Settings(BaseSettings):
     ENVIRONMENT: str = "development"
     DEBUG: bool = True
     API_V1_PREFIX: str = "/api/v1"
+    HOST: str = "0.0.0.0"
+    PORT: int = 8000
 
     # Database
     DATABASE_URL: str = "sqlite:///./social_media.db"
+
+    @property
+    def normalized_database_url(self) -> str:
+        """Ensure standard postgresql:// scheme for SQLAlchemy 2.x compatibility."""
+        if self.DATABASE_URL.startswith("postgres://"):
+            return self.DATABASE_URL.replace("postgres://", "postgresql://", 1)
+        return self.DATABASE_URL
 
     # Platform Adapters Configuration
     DEFAULT_PUBLISHER: str = "mock_x"

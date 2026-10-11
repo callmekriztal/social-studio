@@ -781,3 +781,89 @@ To verify that real worker process interruptions do not corrupt state or cause d
    - The slot transitioned cleanly.
    - No duplicate publish attempts were created.
    - Completed slots are never re-executed.
+
+---
+
+## Phase 10 Production Deployment Smoke-Test Checklist
+
+This checklist tracks production deployment verification, distinguishing automated tests and configurations verified locally from remote steps requiring manual execution by the operator.
+
+### 1. Locally Verified Production Capabilities (Tests Actually Executed)
+
+| Area | Verification Task | Test / Command Executed | Result | Status |
+| :--- | :--- | :--- | :--- | :---: |
+| **ASGI Server** | Host & dynamic port binding | Tested `PORT=8000 HOST=0.0.0.0 uvicorn app.main:app` | Bound cleanly to `$HOST:$PORT` | **PASSED** |
+| **Proxy Headers** | Reverse proxy headers support | Configured `--proxy-headers --forwarded-allow-ips='*'` in `scripts/start_production.sh` | Reverse-proxy safe | **PASSED** |
+| **Database Driver** | PostgreSQL client library | `.venv/bin/pip install psycopg2-binary>=2.9.9` & `import psycopg2` | Installed cleanly | **PASSED** |
+| **Connection Pooling** | Non-SQLite connection pooling | `app/database.py` configured with `pool_pre_ping=True, pool_size=5, max_overflow=10` | Verified on non-sqlite URLs | **PASSED** |
+| **URL Normalization** | Cloud `postgres://` prefix fix | `app/config.py` converts `postgres://` to `postgresql://` | Verified via property | **PASSED** |
+| **DB Initialization** | Idempotent table creation | `python -c "from app.database import init_db; init_db()"` | Verified idempotent | **PASSED** |
+| **Health Check** | Production health check endpoint | Tested `GET /health` with `SELECT 1` query | Returned `200 OK healthy` | **PASSED** |
+| **Supervisor Script** | Dual-process supervisor | Tested `scripts/start_production.sh` syntax and signal traps | Handled SIGTERM/SIGINT | **PASSED** |
+| **Idempotency** | Atomic conditional claiming | `tests/test_regression_and_reliability.py::test_concurrent_slot_claims_protection` | Protected from race conditions | **PASSED** |
+| **Full Regression** | 112 automated tests | `.venv/bin/pytest tests/ -v` | 112 passed in 1.64s | **PASSED** |
+| **Secret Scan** | Zero committed credentials | `git grep -i -E "bot[0-9]+:[a-zA-Z0-9_-]+"` (0 matches) | Zero secrets committed | **PASSED** |
+
+### 2. Remote Production Smoke-Test Checklist (Requires Live Dashboard Execution)
+
+*Note: These steps require manual execution with your live cloud provider credentials. Do not claim verified until the remote service is active and tested.*
+
+- [ ] **Step 1: Provision Managed PostgreSQL**
+  - Create free account on [Neon](https://neon.tech) (0.5GB permanent free tier).
+  - Create database named `social_media`.
+  - Copy connection string (format: `postgresql://user:pass@ep-xyz.region.aws.neon.tech/social_media?sslmode=require`).
+- [ ] **Step 2: Deploy to Render**
+  - Go to [Render Dashboard](https://dashboard.render.com).
+  - Click **New +** $\to$ **Blueprint** (or **Web Service**).
+  - Connect GitHub repository `https://github.com/callmekriztal/social-studio`.
+  - Render detects [`render.yaml`](file:///home/celeste/social_media/render.yaml).
+  - Under Environment Variables, set `DATABASE_URL` to your Neon PostgreSQL connection string.
+  - (Optional) Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` if testing live Telegram; otherwise leave `DEFAULT_PUBLISHER="mock_x"`.
+  - Click **Apply** / **Create Web Service**.
+- [ ] **Step 3: Verify Remote Build and Startup Logs**
+  - Confirm `pip install -r requirements.txt` completed with exit code 0.
+  - Confirm `scripts/start_production.sh` executed:
+    - Log: `Initializing database schema... Database schema verified and ready.`
+    - Log: `Scheduler worker running (PID ...).`
+    - Log: `Uvicorn ASGI server running (PID ...).`
+- [ ] **Step 4: Verify Public Health Check**
+  - Open terminal and ping your public URL:
+    ```bash
+    curl -i https://<your-render-service>.onrender.com/health
+    ```
+  - Verify HTTP status `200 OK` with JSON:
+    ```json
+    {"status": "healthy", "environment": "production", "database": "healthy", ...}
+    ```
+- [ ] **Step 5: Run Production End-to-End Smoke Test**
+  - Ingest post:
+    ```bash
+    curl -X POST https://<your-render-service>.onrender.com/api/posts \
+      -H "Content-Type: application/json" \
+      -d '{"title": "Production Smoke Test", "content": "Verifying production deployment on Render and Neon PostgreSQL."}'
+    ```
+  - Generate variants:
+    ```bash
+    curl -X POST https://<your-render-service>.onrender.com/api/posts/1/generate \
+      -H "Content-Type: application/json" \
+      -d '{"platforms": ["mock_x"]}'
+    ```
+  - Approve variant:
+    ```bash
+    curl -X POST https://<your-render-service>.onrender.com/api/variants/1/approve
+    ```
+  - Schedule variant for 1 minute in the past:
+    ```bash
+    curl -X POST https://<your-render-service>.onrender.com/api/variants/1/schedule \
+      -H "Content-Type: application/json" \
+      -d '{"scheduled_at": "2026-10-11T00:00:00Z"}'
+    ```
+  - Check publish history after worker polling interval:
+    ```bash
+    curl https://<your-render-service>.onrender.com/api/publish-history?variant_id=1
+    ```
+  - Confirm `status: "succeeded"` and external post ID present.
+- [ ] **Step 6: (Optional) Keep-Alive Ping**
+  - Render free web services spin down after 15 minutes of inactivity.
+  - To keep the background worker running continuously 24/7 without cold starts, configure a free monitor on [cron-job.org](https://cron-job.org) or [UptimeRobot](https://uptimerobot.com) to ping `https://<your-render-service>.onrender.com/health` every 10 minutes.
+

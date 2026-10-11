@@ -6,25 +6,37 @@ from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from app.config import get_settings
 
 settings = get_settings()
+db_url = settings.normalized_database_url
 
 # SQLite requires check_same_thread=False for multi-threaded FastAPI workers
 connect_args = (
     {"check_same_thread": False}
-    if settings.DATABASE_URL.startswith("sqlite")
+    if db_url.startswith("sqlite")
     else {}
 )
 
+engine_kwargs = {
+    "connect_args": connect_args,
+    "echo": settings.DEBUG,
+}
+
+if not db_url.startswith("sqlite"):
+    engine_kwargs.update({
+        "pool_pre_ping": True,
+        "pool_size": 5,
+        "max_overflow": 10,
+    })
+
 engine = create_engine(
-    settings.DATABASE_URL,
-    connect_args=connect_args,
-    echo=settings.DEBUG,
+    db_url,
+    **engine_kwargs,
 )
 
 
 @event.listens_for(Engine, "connect")
 def set_sqlite_pragma(dbapi_connection, connection_record):
-    """Enable SQLite foreign key support for all SQLite connections."""
-    if settings.DATABASE_URL.startswith("sqlite"):
+    """Enable SQLite foreign key support for SQLite connections."""
+    if db_url.startswith("sqlite"):
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()
